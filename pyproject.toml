@@ -3,6 +3,9 @@ name = "stableswap-tools"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "matplotlib>=3.10.9",
+    "numpy>=2.4.4",
+    "pyqt6>=6.11.0",
     "titanoboa>=0.2.8",
     "vyper>=0.4.3",
 ]
