@@ -3,7 +3,7 @@
 import boa
 import os
 import json
-from math import isqrt
+from math import sqrt
 from time import sleep
 from eth_account import account
 from getpass import getpass
@@ -17,7 +17,7 @@ from networks import ETHERSCAN_API_KEY
 FORK = False
 EXTRA_TIMEOUT = 10
 DEPLOYER = "0xbabe61887f1de2713c6f97e567623453d3C79f67"  # babe
-PEG_PRICE = isqrt(10**36 // 2)  # 1/sqrt(2) in 1e18 fixed point
+PEG_PRICE = int(1250530656965887 / sqrt(2))  # pricePerShare of 0xCeA18a8752bb7e7817F9AE7565328FE415C0f2cA / sqrt(2)
 
 
 def account_load(fname):
