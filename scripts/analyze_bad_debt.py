@@ -258,7 +258,7 @@ def main():
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=10)
 
-    out = "/home/michwill/Projects/stableswap-tools/recovery_vs_crv_price.png"
+    out = "/home/michwill/Projects/stableswap-tools/plots/recovery_vs_crv_price.png"
     fig.tight_layout()
     fig.savefig(out, dpi=140)
     print(f"\nSaved plot: {out}")
