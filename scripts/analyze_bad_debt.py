@@ -367,7 +367,7 @@ def main():
         handles = [gradient_proxy] + handles
         labels = [gradient_proxy.get_label()] + labels
     ax.legend(handles, labels, loc="lower right", fontsize=10)
-    ax.set_ylim(top=125)
+    ax.set_ylim(top=115)
 
     out = "/home/michwill/Projects/stableswap-tools/plots/recovery_vs_crv_price.png"
     fig.tight_layout()
