@@ -49,7 +49,9 @@ CONTROLLER_ABI = """[
     {"name":"debt","outputs":[{"type":"uint256"}],
      "inputs":[{"name":"_user","type":"address"}],"stateMutability":"view","type":"function"},
     {"name":"user_state","outputs":[{"type":"uint256[4]"}],
-     "inputs":[{"name":"_user","type":"address"}],"stateMutability":"view","type":"function"}
+     "inputs":[{"name":"_user","type":"address"}],"stateMutability":"view","type":"function"},
+    {"name":"total_debt","outputs":[{"type":"uint256"}],
+     "inputs":[],"stateMutability":"view","type":"function"}
 ]"""
 
 AMM_ABI = """[
@@ -161,6 +163,9 @@ def main():
     def p_oracle_up_local(n):
         return int(base_price * pow((A - 1) / A, n))
 
+    market_debt = controller.total_debt()
+    print(f"market total_debt = {market_debt/WAD:,.2f} crvUSD")
+
     print("\nFetching users_to_liquidate ...")
     positions = controller.users_to_liquidate(0, 0)
     print(f"Got {len(positions)} positions")
@@ -228,23 +233,38 @@ def main():
                 v += xb + p_wad * yb / WAD
         total_value[i] = v
 
-    solvency_pct = total_value / total_debt * 100.0
-    ax.plot(prices, solvency_pct, color="black", linewidth=2.4,
-            label=f"solvency  (debt = {total_debt/WAD:,.0f} crvUSD)")
+    # "Redeemable" solvency: only the unprofitable positions contribute,
+    # since they are the ones a liquidator would actually realize.
+    redeemable_pct = total_value / total_debt * 100.0
+    # "Fair" solvency: the rest of the market is assumed to repay in full,
+    # so solvent debt contributes 1:1 to both numerator and denominator.
+    solvent_debt = market_debt - total_debt  # debt of solvent positions
+    fair_pct = (total_value + solvent_debt) / market_debt * 100.0
 
-    # Break-even: lowest CRV price at which Σvalue >= Σdebt. Solvency is
-    # monotonic in p, so np.interp on (solvency, prices) is fine.
-    if solvency_pct[0] < 100 < solvency_pct[-1]:
-        p_break_even = float(np.interp(100.0, solvency_pct, prices))
-        ax.plot([p_break_even], [100.0], "o", color="red", markersize=8,
-                zorder=5)
-        ax.annotate(f"full recovery at p = ${p_break_even:.3f}",
-                    xy=(p_break_even, 100.0),
-                    xytext=(12, -22), textcoords="offset points",
-                    fontsize=10, color="red",
+    ax.plot(prices, redeemable_pct, color="black", linewidth=2.4,
+            label=(f"redeemable solvency  "
+                   f"(insolvent debt = {total_debt/WAD:,.0f} crvUSD)"))
+    ax.plot(prices, fair_pct, color="darkgreen", linewidth=2.0,
+            linestyle="--",
+            label=(f"fair solvency  "
+                   f"(market debt = {market_debt/WAD:,.0f} crvUSD)"))
+
+    def mark_break_even(curve, color, ytext_offset):
+        if not (curve[0] < 100 < curve[-1]):
+            return
+        p_be = float(np.interp(100.0, curve, prices))
+        ax.plot([p_be], [100.0], "o", color=color, markersize=7, zorder=5)
+        ax.annotate(f"full recovery at p = ${p_be:.3f}",
+                    xy=(p_be, 100.0),
+                    xytext=(12, ytext_offset), textcoords="offset points",
+                    fontsize=10, color=color,
                     bbox=dict(boxstyle="round,pad=0.3",
-                              facecolor="white", edgecolor="red", lw=0.8),
-                    arrowprops=dict(arrowstyle="->", color="red", lw=0.8))
+                              facecolor="white", edgecolor=color, lw=0.8),
+                    arrowprops=dict(arrowstyle="->", color=color, lw=0.8))
+
+    # Both curves cross 100% at the same price by construction, so only
+    # one annotation is needed.
+    mark_break_even(redeemable_pct, "red", -22)
 
     ax.axhline(100, color="red", linestyle="--", linewidth=0.8, alpha=0.6,
                label="full recovery (100%)")
