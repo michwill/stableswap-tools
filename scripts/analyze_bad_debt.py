@@ -222,49 +222,98 @@ def main():
     fig, ax = plt.subplots(figsize=(11, 7))
 
     total_debt = sum(u["debt"] for u in user_bands)
-    total_value = np.zeros_like(prices)
 
-    for i, p in enumerate(prices):
-        p_wad = p * WAD
-        v = 0.0
-        for u in user_bands:
+    # Per-user value curves so we can also draw the per-position envelope.
+    nonzero = [u for u in user_bands if u["debt"] > 0]
+    per_user_value = np.zeros((len(nonzero), len(prices)))
+    for ui, u in enumerate(nonzero):
+        for i, p in enumerate(prices):
+            p_wad = p * WAD
+            v = 0.0
             for b in u["bands"]:
                 xb, yb = xy_at_price(b["y0"], b["p_o_up"], p_wad, A)
                 v += xb + p_wad * yb / WAD
-        total_value[i] = v
+            per_user_value[ui, i] = v
 
-    # "Redeemable" solvency: only the unprofitable positions contribute,
-    # since they are the ones a liquidator would actually realize.
-    redeemable_pct = total_value / total_debt * 100.0
-    # "Fair" solvency: the rest of the market is assumed to repay in full,
+    debts = np.array([float(u["debt"]) for u in nonzero])
+    # Once a position's value reaches its debt, a profitable hard-liquidation
+    # would close it: its contribution to the pool stays capped at debt and
+    # it stops accruing further upside. Since value(p) is monotonic in p,
+    # this is equivalent to clipping at debt.
+    per_user_capped = np.minimum(per_user_value, debts[:, None])
+    total_value = per_user_capped.sum(axis=0)
+    per_user_solvency = per_user_value / debts[:, None] * 100.0
+    # Only paint the envelope from non-dust positions: dust positions can
+    # have wildly off-scale solvency curves that aren't useful here.
+    DUST_DEBT = 1000 * WAD
+    big_mask = debts >= DUST_DEBT
+    n_big = int(big_mask.sum())
+    if n_big > 0:
+        env_low = per_user_solvency[big_mask].min(axis=0)
+        env_high = per_user_solvency[big_mask].max(axis=0)
+        ax.fill_between(prices, env_low, env_high,
+                        color="lightgray", alpha=0.6, zorder=1,
+                        label=f"per-position range (debt > 1k crvUSD, "
+                              f"n={n_big})")
+
+    # Redeemable, redefined: at each price, the highest individual solvency
+    # among positions still in the AMM. A position is "still in" iff its
+    # uncapped solvency hasn't yet reached 100% (i.e. it hasn't been
+    # profitably liquidated). We restrict to non-dust positions for the
+    # same reason as the envelope.
+    worst_remaining = np.full_like(prices, np.nan)
+    big_solvency = per_user_solvency[big_mask]
+    for j in range(len(prices)):
+        active = big_solvency[:, j] < 100.0
+        if active.any():
+            worst_remaining[j] = big_solvency[active, j].max()
+
+    # "Fair" solvency: rest of the market is assumed to repay in full,
     # so solvent debt contributes 1:1 to both numerator and denominator.
-    solvent_debt = market_debt - total_debt  # debt of solvent positions
+    solvent_debt = market_debt - total_debt
     fair_pct = (total_value + solvent_debt) / market_debt * 100.0
 
-    ax.plot(prices, redeemable_pct, color="black", linewidth=2.4,
-            label=(f"redeemable solvency  "
-                   f"(insolvent debt = {total_debt/WAD:,.0f} crvUSD)"))
+    ax.plot(prices, worst_remaining, color="black", linewidth=2.4, zorder=4,
+            label="next-to-liquidate (top of still-remaining positions)")
     ax.plot(prices, fair_pct, color="darkgreen", linewidth=2.0,
-            linestyle="--",
+            linestyle="--", zorder=4,
             label=(f"fair solvency  "
                    f"(market debt = {market_debt/WAD:,.0f} crvUSD)"))
 
-    def mark_break_even(curve, color, ytext_offset):
-        if not (curve[0] < 100 < curve[-1]):
-            return
-        p_be = float(np.interp(100.0, curve, prices))
-        ax.plot([p_be], [100.0], "o", color=color, markersize=7, zorder=5)
-        ax.annotate(f"full recovery at p = ${p_be:.3f}",
-                    xy=(p_be, 100.0),
-                    xytext=(12, ytext_offset), textcoords="offset points",
-                    fontsize=10, color=color,
-                    bbox=dict(boxstyle="round,pad=0.3",
-                              facecolor="white", edgecolor=color, lw=0.8),
-                    arrowprops=dict(arrowstyle="->", color=color, lw=0.8))
+    # With per-position liquidation cap, full recovery happens when the
+    # *slowest* position reaches 100% — i.e. max over positions of each
+    # one's individual break-even price. Restrict to non-dust positions
+    # (same filter as the envelope) so handful-of-cents loans don't
+    # hijack the break-even price.
+    per_user_break_even = []
+    for vi, debt_i, big in zip(per_user_value, debts, big_mask):
+        if not big:
+            continue
+        if vi[-1] < debt_i:
+            per_user_break_even.append(np.inf)
+        elif vi[0] >= debt_i:
+            per_user_break_even.append(prices[0])
+        else:
+            per_user_break_even.append(float(np.interp(debt_i, vi, prices)))
+    p_first = min(per_user_break_even) if per_user_break_even else np.inf
+    p_full = max(per_user_break_even) if per_user_break_even else np.inf
 
-    # Both curves cross 100% at the same price by construction, so only
-    # one annotation is needed.
-    mark_break_even(redeemable_pct, "red", -22)
+    def mark(p, text, xytext_offset, color="red"):
+        if not (np.isfinite(p) and prices[0] <= p <= prices[-1]):
+            return
+        ax.plot([p], [100.0], "o", color=color, markersize=7, zorder=20)
+        ann = ax.annotate(text, xy=(p, 100.0),
+                          xytext=xytext_offset, textcoords="offset points",
+                          fontsize=10, color=color, zorder=20,
+                          bbox=dict(boxstyle="round,pad=0.3",
+                                    facecolor="white", edgecolor=color, lw=0.8),
+                          arrowprops=dict(arrowstyle="->", color=color, lw=0.8))
+        ann.get_bbox_patch().set_zorder(20)
+
+    mark(p_first, f"full recovery starts at p = ${p_first:.3f}",
+         (-220, 60))
+    mark(p_full, f"full recovery finishes at p = ${p_full:.3f}",
+         (-150, 28))
 
     ax.axhline(100, color="red", linestyle="--", linewidth=0.8, alpha=0.6,
                label="full recovery (100%)")
@@ -277,6 +326,7 @@ def main():
                  f"Controller: {CONTROLLER}")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=10)
+    ax.set_ylim(top=125)
 
     out = "/home/michwill/Projects/stableswap-tools/plots/recovery_vs_crv_price.png"
     fig.tight_layout()
