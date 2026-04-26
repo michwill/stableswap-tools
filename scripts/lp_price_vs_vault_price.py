@@ -33,10 +33,13 @@ elif not os.environ.get("MPLBACKEND"):
 import matplotlib.pyplot as plt
 
 from networks import NETWORK
+import analyze_bad_debt as bd
 
 
 POOL = "0x516c3ecfe45f0820653e08dd7c93633d71b93cb5"
 VAULT = "0xCeA18a8752bb7e7817F9AE7565328FE415C0f2cA"
+DUST_DEBT = 1000 * 10**18  # ignore dust positions in the bad-debt scan
+LOW_CRV_PRICE = 0.01 * 10**18  # CRV → 0 limit for "leftmost" envelope value
 
 POOL_ABI = """[
     {"name":"A","outputs":[{"type":"uint256"}],"inputs":[],"stateMutability":"view","type":"function"},
@@ -123,6 +126,39 @@ def find_xp0_for_m(m_target, D, A_true, x0_lo=None, x0_hi=None):
     return (x0_lo + x0_hi) // 2
 
 
+def top_of_envelope_at_low_crv():
+    """Highest per-position recovery rate (% of debt) across non-dust insolvent
+    positions in the bad-debt CRV market when CRV → 0. This is the leftmost
+    height of the yellow envelope in analyze_bad_debt.py."""
+    controller = boa.loads_abi(bd.CONTROLLER_ABI, name="BadDebtCtl"
+                               ).at(bd.CONTROLLER)
+    amm = boa.loads_abi(bd.AMM_ABI, name="BadDebtAmm").at(controller.amm())
+    A = amm.A()
+    p_o_now = amm.price_oracle()
+    base = amm.get_base_price()
+    def p_o_up(n):
+        return int(base * pow((A - 1) / A, n))
+    positions = controller.users_to_liquidate(0, 0)
+    best = 0.0
+    for p in positions:
+        addr, debt = p[0], p[3]
+        if debt < DUST_DEBT:
+            continue
+        ns = amm.read_user_tick_numbers(addr)
+        xs_ys = amm.get_xy(addr)
+        xs, ys = list(xs_ys[0]), list(xs_ys[1])
+        sx = sy = 0.0
+        for i, n in enumerate(range(ns[0], ns[1] + 1)):
+            pu = p_o_up(n)
+            y0 = bd.get_y0(xs[i], ys[i], p_o_now, pu, A)
+            xb, yb = bd.xy_at_price(y0, pu, LOW_CRV_PRICE, A)
+            sx += xb; sy += yb
+        value = sx + LOW_CRV_PRICE * sy / bd.WAD
+        rec = value / debt * 100.0
+        best = max(best, rec)
+    return best
+
+
 def main():
     boa.fork(NETWORK)
     boa.env.eoa = "0x0000000000000000000000000000000000000001"
@@ -185,10 +221,13 @@ def main():
     ax.plot(pct_axis, lp_prices, color="black", linewidth=2.4)
 
     pct_now = (m_now * peg / pps) * 100.0
-    pct_peg = peg / pps * 100.0
+    pct_top_envelope = top_of_envelope_at_low_crv()
     pct_full = 100.0
+    print(f"\ntop of bad-debt envelope at CRV→0 = {pct_top_envelope:.4f}% of "
+          f"face")
+
     lp_at_now = float(np.interp(pct_now, pct_axis, lp_prices))
-    lp_at_peg = float(np.interp(pct_peg, pct_axis, lp_prices))
+    lp_at_top = float(np.interp(pct_top_envelope, pct_axis, lp_prices))
     lp_at_full = float(np.interp(pct_full, pct_axis, lp_prices))
 
     ax.set_xlim(50, 100)
@@ -204,8 +243,9 @@ def main():
                     xytext=(4, ytext_offset), textcoords="offset points",
                     fontsize=9, color=color)
 
-    mark(pct_peg, lp_at_peg, "darkorange", "--",
-         f"oracle peg ({pct_peg:.2f}% of face)", ytext_offset=-12)
+    mark(pct_top_envelope, lp_at_top, "darkorange", "--",
+         f"top of bad-debt envelope at CRV→0 "
+         f"({pct_top_envelope:.2f}% of face)", ytext_offset=-12)
     mark(pct_now, lp_at_now, "blue", ":",
          f"current implied market price ({pct_now:.2f}% of face)")
     mark(pct_full, lp_at_full, "red", "--",
