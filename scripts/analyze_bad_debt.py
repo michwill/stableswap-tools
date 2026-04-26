@@ -69,6 +69,9 @@ AMM_ABI = """[
 
 WAD = 10**18
 
+# Aged-newsprint pale yellow for the debt-density shading.
+NEWSPAPER_YELLOW = "#d4b970"
+
 
 def get_y0(x, y, p_o, p_o_up, A):
     """Compute band invariant y0.
@@ -216,8 +219,11 @@ def main():
     # Sweep CRV price.
     p_min = 0.01
     p_max = 1.3
-    n_pts = 400
-    prices = np.linspace(p_min, p_max, n_pts)
+    # Compute past the visible window so curves don't terminate visibly
+    # short of the right edge of the frame.
+    p_compute_max = 1.5
+    n_pts = 460
+    prices = np.linspace(p_min, p_compute_max, n_pts)
 
     fig, ax = plt.subplots(figsize=(11, 7))
 
@@ -249,12 +255,38 @@ def main():
     big_mask = debts >= DUST_DEBT
     n_big = int(big_mask.sum())
     if n_big > 0:
-        env_low = per_user_solvency[big_mask].min(axis=0)
-        env_high = per_user_solvency[big_mask].max(axis=0)
+        big_debts = debts[big_mask]
+        big_solvency = per_user_solvency[big_mask]
+        total_big = big_debts.sum()
+        env_low = big_solvency.min(axis=0)
+        env_high = big_solvency.max(axis=0)
+
+        # Inside the envelope we paint a base translucent floor and stack
+        # one fill per position, going from the bottom of the envelope up
+        # to that position's solvency curve. Each fill's alpha is
+        # proportional to that position's debt share, so the composited
+        # alpha at any (p, y) tracks the debt-weighted fraction of
+        # positions lying *above* y at that price — i.e. the share of bad
+        # debt that's actually liquidatable from this y level upward.
+        # Alpha goes from ~20% at the top of the envelope (almost nothing
+        # left to liquidate above) to ~80% at the bottom.
         ax.fill_between(prices, env_low, env_high,
-                        color="lightgray", alpha=0.6, zorder=1,
-                        label=f"per-position range (debt > 1k crvUSD, "
-                              f"n={n_big})")
+                        color=NEWSPAPER_YELLOW, alpha=0.2, zorder=1, linewidth=0)
+        # Sum α_i ≈ 1.5 so 1 - exp(-1.5) ≈ 0.78 ⇒ ~80% maximum darkness.
+        ALPHA_SCALE = 1.5
+        for i in range(n_big):
+            a = ALPHA_SCALE * float(big_debts[i] / total_big)
+            ax.fill_between(prices, env_low, big_solvency[i],
+                            color=NEWSPAPER_YELLOW, alpha=a, zorder=1,
+                            linewidth=0)
+        # Proxy artist for the legend (Patch isn't a real on-axes artist;
+        # add it via the legend handles list further down).
+        from matplotlib.patches import Patch
+        gradient_proxy = Patch(facecolor=NEWSPAPER_YELLOW, alpha=0.5,
+                               label=f"liquidatable-debt density "
+                                     f"(n={n_big} pos, debt > 1k crvUSD)")
+    else:
+        gradient_proxy = None
 
     # Redeemable, redefined: at each price, the highest individual solvency
     # among positions still in the AMM. A position is "still in" iff its
@@ -277,8 +309,7 @@ def main():
             label="next-to-liquidate (top of still-remaining positions)")
     ax.plot(prices, fair_pct, color="darkgreen", linewidth=2.0,
             linestyle="--", zorder=4,
-            label=(f"fair solvency  "
-                   f"(market debt = {market_debt/WAD:,.0f} crvUSD)"))
+            label="fair solvency (market average)")
 
     # With per-position liquidation cap, full recovery happens when the
     # *slowest* position reaches 100% — i.e. max over positions of each
@@ -325,7 +356,12 @@ def main():
                  f"{len(user_bands)} unprofitable positions\n"
                  f"Controller: {CONTROLLER}")
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=10)
+    ax.set_xlim(p_min, p_max)
+    handles, labels = ax.get_legend_handles_labels()
+    if gradient_proxy is not None:
+        handles = [gradient_proxy] + handles
+        labels = [gradient_proxy.get_label()] + labels
+    ax.legend(handles, labels, loc="lower right", fontsize=10)
     ax.set_ylim(top=125)
 
     out = "/home/michwill/Projects/stableswap-tools/plots/recovery_vs_crv_price.png"
