@@ -258,8 +258,13 @@ def main():
         big_debts = debts[big_mask]
         big_solvency = per_user_solvency[big_mask]
         total_big = big_debts.sum()
-        env_low = big_solvency.min(axis=0)
-        env_high = big_solvency.max(axis=0)
+        # A position is "alive" only while its uncapped solvency is below
+        # 100%. Once it hits 100% it gets profitably liquidated and stops
+        # contributing to the envelope at any higher price.
+        big_solvency_active = np.where(big_solvency < 100.0,
+                                       big_solvency, np.nan)
+        env_low = np.nanmin(big_solvency_active, axis=0)
+        env_high = np.nanmax(big_solvency_active, axis=0)
 
         # Inside the envelope we paint a base translucent floor and stack
         # one fill per position, going from the bottom of the envelope up
@@ -276,7 +281,7 @@ def main():
         ALPHA_SCALE = 1.5
         for i in range(n_big):
             a = ALPHA_SCALE * float(big_debts[i] / total_big)
-            ax.fill_between(prices, env_low, big_solvency[i],
+            ax.fill_between(prices, env_low, big_solvency_active[i],
                             color=NEWSPAPER_YELLOW, alpha=a, zorder=1,
                             linewidth=0)
         # Proxy artist for the legend (Patch isn't a real on-axes artist;
